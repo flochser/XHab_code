@@ -32,8 +32,8 @@
 
 // Replace with your network credentials
 
-const char* ssid = "TP-LINK_AP_08E2";
-const char* password = "05228485";
+const char* ssid = "_Free_Wifi_Berlin";
+const char* password = "";
 float weight = 0.0;
 
 // define GPIOs for data and clock PIN
@@ -47,7 +47,7 @@ AsyncWebServer server(80);
 // make variables for time
 
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 7200;
+const long  gmtOffset_sec = 3600;
 const int   daylightOffset_sec = 3600;
 
 // control variables for methods
@@ -55,6 +55,7 @@ const int   daylightOffset_sec = 3600;
 boolean takeNewPhoto = false;
 boolean takeNewScaleMeasurement = false;
 boolean scaleCalibrated = false;
+boolean delete_weight_file = false;
 
 File weights;
 
@@ -174,10 +175,6 @@ void setup() {
   // Turn-off the 'brownout detector'
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 
-  // set the time
-
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
   // OV2640 camera module
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -203,11 +200,11 @@ void setup() {
 
   if (psramFound()) {
     config.frame_size = FRAMESIZE_UXGA;
-    config.jpeg_quality = 10;
+    config.jpeg_quality = 6;
     config.fb_count = 2;
   } else {
     config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;
+    config.jpeg_quality = 6;
     config.fb_count = 1;
   }
   
@@ -232,7 +229,6 @@ void setup() {
 
   server.on("/measure", HTTP_GET, [](AsyncWebServerRequest * request) {
     takeNewScaleMeasurement = true;
-    //request->send_P(200, "text/plain", "measure_weights");
     request->send(SPIFFS, "/weights.txt", "text/plain");
   });
 
@@ -249,6 +245,11 @@ void setup() {
   
   server.begin();
 
+  // set the time
+
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  //getTime();
+
   pinMode(FLASH_GPIO_NUM, OUTPUT);
 }
 
@@ -256,8 +257,10 @@ void loop() {
   if (takeNewPhoto) {
     capturePhotoSaveSpiffs();
     takeNewPhoto = false;
-  }
+  };
+  delay(1);
   if (takeNewScaleMeasurement) {
+    Serial.println("got into measure in loop");
     measureScale();
     takeNewScaleMeasurement = false;
   }
@@ -337,32 +340,70 @@ void sendCallback(SendStatus msg) {
 }
 
 void measureScale( void ) {
+  Serial.println("in measure function");
+  delay(15);
   rtc_clk_cpu_freq_set(RTC_CPU_FREQ_80M);
-  if (!scaleCalibrated) {
-    scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
-    scale.set_scale(30);
-    scale.tare();
-    scaleCalibrated = true;
+  Serial.println("after freq change");
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+  scale.power_up();
+  scale.set_scale(-386.44);
+  if (!scaleCalibrated)
+    {
+      scale.tare();
+      scaleCalibrated = true;
+    };
+  Serial.println("before check file");
+  if (delete_weight_file && SPIFFS.exists("/weights.txt")) {
+    SPIFFS.remove("/weights.txt");
   };
+  Serial.println("after check file, before open file");
   weights = SPIFFS.open("/weights.txt", "a");
+  delay(2);
+  Serial.println("after open file, before measuring");
   if (!weights) {
     Serial.println("could not open storage file *weights*");
   } else {
-    struct tm timeinfo;
     weight = scale.get_units(5);
-    if (!weight or weight == 0.0) {
-      Serial.println("could not get data from scale");
-    } else {
-      Serial.print("get units: \t\t");
-      Serial.println(weight, 1);        // print the average of 5 readings from the ADC minus tare weight, divided by the SCALE parameter set with set_scale
-      weights.print(weight, 2);
-      weights.print("\t");
-      weights.print(&timeinfo, "%B %d %Y %H:%M:%S");
-      weights.print("\n");
-    };
-  weights.close();
+    //weight = 3.43;
   };
+  scale.power_down();
   rtc_clk_cpu_freq_set(RTC_CPU_FREQ_240M);
-  Serial.println("File weights");
+  delay(15);
+  if (!weight or weight == 0.0) {
+    Serial.println("could not get data from scale");
+  } else {
+    int moment[5] = {0,0,0,0,0};
+    fillTime(moment);
+    //moment = getTime();
+    Serial.println("before printing moment");
+    for(int i = 0; i < 5; i++){ Serial.println(moment[i]);};
+    Serial.println(weight, 1);        // print the average of 5 readings from the ADC minus tare weight, divided by the SCALE parameter set with set_scale
+    weights.print(weight, 2);
+    weights.print("\t");
+    weights.print(moment[0]);
+    weights.print(":");
+    weights.print(moment[1]);
+    weights.print(" ");
+    weights.print(moment[2]);
+    weights.print(".");
+    weights.print(moment[3]);
+    weights.print(".");
+    weights.print(moment[4]);
+    weights.print("\n");
+  };
+  Serial.println("before closing *weights*");
   weights.close();
-}
+  Serial.println("after closing *weights*");
+};
+
+void fillTime(int (& emptyarray) [5] ) {
+  time_t rawtime;
+  struct tm * timeinfo;
+  time ( &rawtime );
+  timeinfo = localtime ( &rawtime );
+  emptyarray[0] = timeinfo->tm_hour; 
+  emptyarray[1] = timeinfo->tm_min;
+  emptyarray[2] = timeinfo->tm_mday;
+  emptyarray[3] = timeinfo->tm_mon + 1;
+  emptyarray[4] = timeinfo->tm_year + 1900;
+};
